@@ -45,7 +45,7 @@ func HandleWsConn(conn *websocket.Conn) {
 
 				scanner := bufio.NewScanner(pipe)
 				for scanner.Scan() {
-					if err := conn.WriteMessage(websocket.TextMessage, []byte(scanner.Text())); err != nil {
+					if err := conn.WriteMessage(websocket.TextMessage, (scanner.Bytes())); err != nil {
 						log.Println("Error sending message:", err)
 						break
 					}
