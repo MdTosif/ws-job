@@ -1,31 +1,66 @@
 package runner
 
 import (
-	"bufio"
 	"io"
+	"log"
 	"os"
 	"os/exec"
+	"sync"
 
+	"slices"
+
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
 
-type Runner struct{
-	cmdRunning []*exec.Cmd
+type Runner struct {
+	jobRunning []*Job
 }
 
 type Job struct {
 	ID         string
-	Cmd        string
+	Cmd        *exec.Cmd
 	Subscriber []*websocket.Conn
+	// mutex to handle exit
+	Exited bool
+
+	mu sync.Mutex
 }
 
 func New() *Runner {
 	return &Runner{}
 }
 
-func (r *Runner) Run(command string) (<-chan string, <-chan string, error) {
+func (j *Job) kill() {
+	j.Cmd.Process.Signal(os.Kill)
+	j.SetExited()
+}
+
+// SetExited safely sets the Exited flag to true using a mutex
+func (j *Job) SetExited() {
+	j.mu.Lock()         // Acquire the lock
+	defer j.mu.Unlock() // Ensure the lock is released
+	j.Exited = true     // Modify the shared resource
+}
+
+// IsExited safely checks the Exited flag using a mutex
+func (j *Job) IsExited() bool {
+	j.mu.Lock()         // Acquire the lock
+	defer j.mu.Unlock() // Ensure the lock is released
+	return j.Exited     // Read the shared resource
+}
+
+func (r *Runner) Run(command string) (io.ReadCloser, io.ReadCloser, error) {
 	cmd := exec.Command("bash", "-c", command)
-	r.cmdRunning = append(r.cmdRunning, cmd)
+
+	currentJob := &Job{
+		ID:         uuid.NewString(),
+		Cmd:        cmd,
+		Exited: false,
+		Subscriber: []*websocket.Conn{},
+	}
+
+	r.jobRunning = append(r.jobRunning, currentJob)
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
@@ -36,43 +71,32 @@ func (r *Runner) Run(command string) (<-chan string, <-chan string, error) {
 		return nil, nil, err
 	}
 
-	stdoutChan := make(chan string)
-	stderrChan := make(chan string)
 
 	// Start the command
 	if err := cmd.Start(); err != nil {
 		return nil, nil, err
 	}
 
-	// Function to stream output line by line
-	stream := func(pipe io.ReadCloser, ch chan<- string) {
-		scanner := bufio.NewScanner(pipe)
-		for scanner.Scan() {
-			ch <- scanner.Text()
-		}
-		close(ch)
-	}
-
-	go stream(stdoutPipe, stdoutChan)
-	go stream(stderrPipe, stderrChan)
 
 	// Wait in a goroutine so it doesn’t block
 	go func() {
 		cmd.Wait()
+		log.Println("cmd exited after waiting")
+		currentJob.SetExited()
 		// remove it from cmdRunning
-		for i, c := range r.cmdRunning {
-			if c == cmd {
-				r.cmdRunning = append(r.cmdRunning[:i], r.cmdRunning[i+1:]...)
+		for i, c := range r.jobRunning {
+			if c.Cmd == cmd {
+				r.jobRunning = slices.Delete(r.jobRunning, i, i+1)
 				break
 			}
 		}
 	}()
 
-	return stdoutChan, stderrChan, nil
+	return stdoutPipe, stderrPipe, nil
 }
 
 func (r *Runner) Stop() {
-	for _, cmd := range r.cmdRunning {
-		cmd.Process.Signal(os.Kill)
+	for _, job := range r.jobRunning {
+		job.kill()
 	}
-}	
+}

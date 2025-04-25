@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"bufio"
+	"io"
 	"log"
 
 	"slices"
@@ -16,7 +18,6 @@ func HandleWsConn(conn *websocket.Conn) {
 	openConnections = append(openConnections, conn)
 
 	var exec = runner.New()
-	
 
 	for {
 		msgType, msg, err := conn.ReadMessage()
@@ -29,7 +30,7 @@ func HandleWsConn(conn *websocket.Conn) {
 		case websocket.TextMessage:
 			// Handle text message (UTF-8 encoded string)
 			log.Printf("Received text message: %s", msg)
-			outputChan, errorChan, err := exec.Run(string(msg))
+			stdoutPipe, stderrPipe, err := exec.Run(string(msg))
 
 			if err != nil {
 				log.Println("Error executing command:", err)
@@ -40,50 +41,20 @@ func HandleWsConn(conn *websocket.Conn) {
 				break
 			}
 
-			for {
-				var errorInSendingMessage error
-				select {
-				case output, ok := <-outputChan:
-					if !ok {
-						// Channel is closed, exit the loop
-						outputChan = nil
-					} else {
-						log.Println("Output:", output)
-						// Send output message to client
-						if err := conn.WriteMessage(websocket.TextMessage, []byte(output)); err != nil {
-							log.Println("Error sending output message:", err)
-							errorInSendingMessage = err
+			stream := func(conn *websocket.Conn, pipe io.ReadCloser) {
 
-						}
-					}
-
-				case err, ok := <-errorChan:
-					if !ok {
-						// Channel is closed, exit the loop
-						errorChan = nil
-					} else {
-
-						// Send error message to client
-						if err := conn.WriteMessage(websocket.TextMessage, []byte(err)); err != nil {
-							log.Println("Error sending error message:", err)
-							errorInSendingMessage = err
-						}
+				scanner := bufio.NewScanner(pipe)
+				for scanner.Scan() {
+					if err := conn.WriteMessage(websocket.TextMessage, []byte(scanner.Text())); err != nil {
+						log.Println("Error sending message:", err)
+						break
 					}
 				}
 
-				if errorInSendingMessage != nil {
-					log.Println("Error sending message:", errorInSendingMessage)
-					break
-				}
-
-				// exit when both channel has been closed
-				if outputChan == nil && errorChan == nil {
-					log.Println("Both channels have been closed")
-					break
-				}
-
-				exec.Stop()
 			}
+
+			go stream(conn, stdoutPipe)
+			go stream(conn, stderrPipe)
 
 		case websocket.BinaryMessage:
 			// Handle binary message (e.g., file upload, image)
@@ -135,5 +106,4 @@ func HandleWsConn(conn *websocket.Conn) {
 		return nil
 	})
 
-	
 }
