@@ -3,29 +3,21 @@ package handler
 import (
 	"log"
 
+	"slices"
+
 	"github.com/gorilla/websocket"
 	"github.com/mdtosif/ws-job/cmd/runner"
 )
 
 var openConnections = []*websocket.Conn{}
 
-var exec = runner.New()
-
 func HandleWsConn(conn *websocket.Conn) {
 	defer conn.Close() // Ensure the connection is closed when the handler exits
 	openConnections = append(openConnections, conn)
 
-	conn.SetCloseHandler(func(code int, text string) error {
-		log.Printf("Connection closed with code %d: %s", code, text)
-		// remove from openConnections
-		for i, c := range openConnections {
-			if c == conn {
-				openConnections = append(openConnections[:i], openConnections[i+1:]...)
-				break
-			}
-		}
-		return nil
-	})
+	var exec = runner.New()
+	
+
 	for {
 		msgType, msg, err := conn.ReadMessage()
 		if err != nil {
@@ -37,9 +29,19 @@ func HandleWsConn(conn *websocket.Conn) {
 		case websocket.TextMessage:
 			// Handle text message (UTF-8 encoded string)
 			log.Printf("Received text message: %s", msg)
-			outputChan, errorChan := exec.Run(string(msg))
+			outputChan, errorChan, err := exec.Run(string(msg))
+
+			if err != nil {
+				log.Println("Error executing command:", err)
+				// Send error message to client
+				if err := conn.WriteMessage(websocket.TextMessage, []byte(err.Error())); err != nil {
+					log.Println("Error sending error message:", err)
+				}
+				break
+			}
 
 			for {
+				var errorInSendingMessage error
 				select {
 				case output, ok := <-outputChan:
 					if !ok {
@@ -50,21 +52,37 @@ func HandleWsConn(conn *websocket.Conn) {
 						// Send output message to client
 						if err := conn.WriteMessage(websocket.TextMessage, []byte(output)); err != nil {
 							log.Println("Error sending output message:", err)
+							errorInSendingMessage = err
+
 						}
 					}
 
 				case err, ok := <-errorChan:
 					if !ok {
 						// Channel is closed, exit the loop
-						outputChan = nil
+						errorChan = nil
 					} else {
 
 						// Send error message to client
-						if err := conn.WriteMessage(websocket.TextMessage, []byte(err.Error())); err != nil {
+						if err := conn.WriteMessage(websocket.TextMessage, []byte(err)); err != nil {
 							log.Println("Error sending error message:", err)
+							errorInSendingMessage = err
 						}
 					}
 				}
+
+				if errorInSendingMessage != nil {
+					log.Println("Error sending message:", errorInSendingMessage)
+					break
+				}
+
+				// exit when both channel has been closed
+				if outputChan == nil && errorChan == nil {
+					log.Println("Both channels have been closed")
+					break
+				}
+
+				exec.Stop()
 			}
 
 		case websocket.BinaryMessage:
@@ -103,4 +121,19 @@ func HandleWsConn(conn *websocket.Conn) {
 			log.Printf("Received unknown message type: %d", msgType)
 		}
 	}
+
+	conn.SetCloseHandler(func(code int, text string) error {
+		log.Printf("Connection closed with code %d: %s", code, text)
+		exec.Stop()
+		// remove from openConnections
+		for i, c := range openConnections {
+			if c == conn {
+				openConnections = slices.Delete(openConnections, i, i+1)
+				break
+			}
+		}
+		return nil
+	})
+
+	
 }

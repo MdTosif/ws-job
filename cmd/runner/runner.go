@@ -1,69 +1,78 @@
 package runner
 
 import (
-	"bytes"
+	"bufio"
+	"io"
+	"os"
 	"os/exec"
+
+	"github.com/gorilla/websocket"
 )
 
-// Runner struct that will execute commands
-type Runner struct{}
+type Runner struct{
+	cmdRunning []*exec.Cmd
+}
 
-// New creates a new Runner instance
+type Job struct {
+	ID         string
+	Cmd        string
+	Subscriber []*websocket.Conn
+}
+
 func New() *Runner {
 	return &Runner{}
 }
 
-// Run executes a shell command and returns a channel that will provide output as it comes in
-func (r *Runner) Run(command string) (<-chan string, chan error) {
-	// Create a channel for output
-	outputChan := make(chan string)
-	// Create a channel for errors
-	errorChan := make(chan error)
+func (r *Runner) Run(command string) (<-chan string, <-chan string, error) {
+	cmd := exec.Command("bash", "-c", command)
+	r.cmdRunning = append(r.cmdRunning, cmd)
 
-	// Start a goroutine to execute the command
-	go func() {
-		defer close(outputChan)
-		defer close(errorChan)
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, nil, err
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, nil, err
+	}
 
-		cmd := exec.Command("bash", "-c", command)
-		var out bytes.Buffer
-		cmd.Stdout = &out
-		cmd.Stderr = &out
+	stdoutChan := make(chan string)
+	stderrChan := make(chan string)
 
-		// Start the command and stream its output
-		err := cmd.Start()
-		if err != nil {
-			errorChan <- err
-			return
+	// Start the command
+	if err := cmd.Start(); err != nil {
+		return nil, nil, err
+	}
+
+	// Function to stream output line by line
+	stream := func(pipe io.ReadCloser, ch chan<- string) {
+		scanner := bufio.NewScanner(pipe)
+		for scanner.Scan() {
+			ch <- scanner.Text()
 		}
+		close(ch)
+	}
 
-		// Create a goroutine that will read the output and send it to the channel
-		go func() {
-			// Continuously read the output line by line and send it through the channel
-			for {
-				// Read output as it comes in (line by line)
-				data := make([]byte, 10)
-				_, err := out.Read(data)
-				if err != nil {
-					// Break the loop if there's no more output
-					break
-				}
-				// Send the line to the output channel, but only if it's not closed
-				select {
-				case outputChan <- string(data): // Safe to send data to the channel
-				default: // Channel is closed, no sending
-					return
-				}
+	go stream(stdoutPipe, stdoutChan)
+	go stream(stderrPipe, stderrChan)
+
+	// Wait in a goroutine so it doesn’t block
+	go func() {
+		cmd.Wait()
+		// remove it from cmdRunning
+		for i, c := range r.cmdRunning {
+			if c == cmd {
+				r.cmdRunning = append(r.cmdRunning[:i], r.cmdRunning[i+1:]...)
+				break
 			}
-		}()
-
-		// Wait for the command to finish
-		err = cmd.Wait()
-		if err != nil {
-			errorChan <- err
 		}
 	}()
 
-	// Return both channels
-	return outputChan, errorChan
+	return stdoutChan, stderrChan, nil
 }
+
+func (r *Runner) Stop() {
+	for _, cmd := range r.cmdRunning {
+		cmd.Process.Signal(os.Kill)
+	}
+}	
