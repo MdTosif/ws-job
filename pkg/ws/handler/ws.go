@@ -15,21 +15,28 @@ var openConnections = []*websocket.Conn{}
 
 func HandleWsConn(conn *websocket.Conn) {
 	defer conn.Close() // Ensure the connection is closed when the handler exits
+	// manage a list of open connections
 	openConnections = append(openConnections, conn)
 
+	// create a new runner for each open connection
 	var exec = runner.New()
 
+	// read messages in loop
 	for {
 		msgType, msg, err := conn.ReadMessage()
+
 		if err != nil {
 			break
 		}
 
 		// Handle different message types
 		switch msgType {
+
+		// handle text message
 		case websocket.TextMessage:
 			// Handle text message (UTF-8 encoded string)
 			log.Printf("Received text message: %s", msg)
+			// get the stream pipe of cmd output
 			stdoutPipe, stderrPipe, err := exec.Run(string(msg))
 
 			if err != nil {
@@ -38,15 +45,17 @@ func HandleWsConn(conn *websocket.Conn) {
 				if err := conn.WriteMessage(websocket.TextMessage, []byte(err.Error())); err != nil {
 					log.Println("Error sending error message:", err)
 				}
-				break
+				continue
 			}
 
 			stream := func(conn *websocket.Conn, pipe io.ReadCloser) {
 
 				scanner := bufio.NewScanner(pipe)
 				for scanner.Scan() {
+					// if encounter any error while sending message (connection drop) exit the loop and close the connection
 					if err := conn.WriteMessage(websocket.TextMessage, (scanner.Bytes())); err != nil {
 						log.Println("Error sending message:", err)
+						conn.Close()
 						break
 					}
 				}
@@ -95,9 +104,11 @@ func HandleWsConn(conn *websocket.Conn) {
 
 	conn.SetCloseHandler(func(code int, text string) error {
 		log.Printf("Connection closed with code %d: %s", code, text)
+		// stop the runner once the connection is closed
 		exec.Stop()
 		// remove from openConnections
 		for i, c := range openConnections {
+			// remove it from open connections list
 			if c == conn {
 				openConnections = slices.Delete(openConnections, i, i+1)
 				break
