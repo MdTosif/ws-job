@@ -55,7 +55,7 @@ func (r *Runner) Run(command string) (io.ReadCloser, io.ReadCloser, error) {
 		r.Stop()
 		return nil, nil, nil
 	}
-	cmd := exec.Command("bash", "-c", command)
+	cmd := exec.Command("sh", "-c", command)
 
 	currentJob := &Job{
 		ID:         uuid.NewString(),
