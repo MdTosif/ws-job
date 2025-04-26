@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log"
 	"net/http"
 	_ "net/http/pprof"
 
@@ -25,7 +26,7 @@ func main() {
 
 	// http server running on port 4444 and handling websocket connections
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, "index.html")
+		http.ServeFile(w, r, "pkg/html/index.html")
 	})
 
 	// websocket handler
@@ -39,6 +40,14 @@ func main() {
 		handler.HandleWsConn(conn)
 		
 	})
-	http.ListenAndServe(":4444", nil)
+	
+	log.Println("Server started on port 4444")
+
+	err := http.ListenAndServe(":4444", nil)
+
+	if err != nil {
+		panic(err)
+	}	
+
 
 }

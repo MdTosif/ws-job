@@ -51,6 +51,10 @@ func (j *Job) IsExited() bool {
 }
 
 func (r *Runner) Run(command string) (io.ReadCloser, io.ReadCloser, error) {
+	if command == "stop-all-running-jobs" {
+		r.Stop()
+		return nil, nil, nil
+	}
 	cmd := exec.Command("bash", "-c", command)
 
 	currentJob := &Job{

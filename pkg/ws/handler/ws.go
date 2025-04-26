@@ -50,6 +50,9 @@ func HandleWsConn(conn *websocket.Conn) {
 
 			stream := func(conn *websocket.Conn, pipe io.ReadCloser) {
 
+				if pipe == nil {
+					return
+				}
 				scanner := bufio.NewScanner(pipe)
 				for scanner.Scan() {
 					// if encounter any error while sending message (connection drop) exit the loop and close the connection
